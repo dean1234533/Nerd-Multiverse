@@ -156,7 +156,7 @@ export default function Clients() {
           <ClientForm
             onCancel={() => setAdding(false)}
             onSave={(c) => {
-              update((d) => void d.clients.push(c), `${c.firstName} added`);
+              update((d) => void d.clients.push(c), `Added client ${c.firstName} ${c.lastName}`);
               setAdding(false);
               nav(`/clients/${c.id}`);
             }}

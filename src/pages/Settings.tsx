@@ -23,7 +23,7 @@ export default function Settings() {
     try {
       const data = JSON.parse(await f.text()) as DB;
       if (data?.version !== 1 || !Array.isArray(data.clients)) throw new Error('bad file');
-      replace({ ...emptyDB(), ...data });
+      replace({ ...emptyDB(), ...data }, 'Restored a backup');
       setS({ ...emptyDB().settings, ...data.settings });
       toast('Backup restored');
     } catch {
@@ -92,7 +92,7 @@ export default function Settings() {
 
       <section className="card">
         <h2>Your data</h2>
-        <p className="muted">Everything is stored in this browser. Export a backup regularly, or to move to another device.</p>
+        <p className="muted">Everything is saved to your account automatically. You can also download a backup file, or restore one.</p>
         <div className="actions wrap">
           <button className="btn ghost" onClick={exportData}>
             Export backup
@@ -106,7 +106,7 @@ export default function Settings() {
             onClick={() => {
               if (!confirm('Replace all data with the demo business?')) return;
               const d = seedDB();
-              replace(d);
+              replace(d, 'Replaced all data with the demo business');
               setS(d.settings);
               toast('Demo data loaded');
             }}
@@ -118,8 +118,8 @@ export default function Settings() {
             onClick={() => {
               if (!confirm('Erase everything and start with an empty account? This cannot be undone.')) return;
               const demo = seedDB();
-              const d = { ...emptyDB(), exercises: demo.exercises, foods: demo.foods };
-              replace(d);
+              const d = { ...emptyDB(), exercises: demo.exercises, foods: demo.foods, products: demo.products };
+              replace(d, 'Erased all data and started fresh');
               setS(d.settings);
               toast('Started fresh (exercise and food libraries kept)');
             }}

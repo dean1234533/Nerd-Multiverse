@@ -1,14 +1,14 @@
 // What a client sees when they log in: their bookings and credits, open
 // classes to book, assigned workouts (with logging), meal plan, progress
 // and invoices — branded with the trainer's business.
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { useStore } from '../store';
-import type { ID, WorkoutLog } from '../types';
+import { useStore, useToast } from '../store';
+import type { DB, ID, WorkoutLog } from '../types';
+import { api } from '../api';
+import { applyPortalAction, type PortalAction } from '../portalScope';
 import {
   activePackages,
-  bookClient,
-  cancelBooking,
   creditsRemaining,
   invoiceTotals,
   isOverdue,
@@ -17,13 +17,14 @@ import {
   TYPE_LABELS,
   upcomingFor,
 } from '../logic';
-import { addDays, fmtDate, fmtDateTime, fmtMoney, uid } from '../utils';
+import { addDays, fmtDate, fmtDateTime, fmtMoney } from '../utils';
 import { Badge, Empty, LineChart, Modal, Tabs } from '../components/ui';
 
 type Tab = 'bookings' | 'workouts' | 'nutrition' | 'progress' | 'payments';
 
-function LogWorkoutModal({ clientId, programId, dayId, onClose }: { clientId: ID; programId: ID; dayId: ID; onClose: () => void }) {
-  const { db, update } = useStore();
+type Act = (action: PortalAction, success: string) => Promise<boolean>;
+
+function LogWorkoutModal({ db, act, clientId, programId, dayId, onClose }: { db: DB; act: Act; clientId: ID; programId: ID; dayId: ID; onClose: () => void }) {
   const day = db.programs.find((p) => p.id === programId)?.days.find((d) => d.id === dayId);
   const last = db.workoutLogs.filter((l) => l.clientId === clientId && l.dayId === dayId).sort((a, b) => b.date.localeCompare(a.date))[0];
   const [entries, setEntries] = useState<WorkoutLog['entries']>(() => day?.items.map((it) => ({ itemId: it.id, weight: '', reps: '', done: false })) ?? []);
@@ -34,10 +35,9 @@ function LogWorkoutModal({ clientId, programId, dayId, onClose }: { clientId: ID
     <Modal title={`Log: ${day.name}`} onClose={onClose} wide>
       <form
         className="form"
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
-          const ok = update((d) => void d.workoutLogs.push({ id: uid(), clientId, programId, dayId, date: new Date().toISOString(), notes, entries }), 'Workout logged – nice work!');
-          if (ok) onClose();
+          if (await act({ type: 'log', programId, dayId, notes, entries }, 'Workout logged – nice work!')) onClose();
         }}
       >
         <div className="table-wrap">
@@ -91,13 +91,69 @@ function LogWorkoutModal({ clientId, programId, dayId, onClose }: { clientId: ID
   );
 }
 
-export default function Portal() {
+/** Trainer's in-app preview of a client's portal; actions apply to the workspace directly. */
+export default function PortalPreview() {
   const { clientId } = useParams();
-  const { db, update, toast } = useStore();
+  const { db, update } = useStore();
+  const act: Act = async (action, success) => update((d) => void applyPortalAction(d, clientId!, action, new Date()), success);
+  return (
+    <PortalView
+      db={db}
+      clientId={clientId!}
+      act={act}
+      banner={
+        <>
+          Previewing the client portal as {db.clients.find((c) => c.id === clientId)?.firstName ?? 'this client'}. <Link to={`/clients/${clientId}`}>Back to trainer view</Link>
+        </>
+      }
+    />
+  );
+}
+
+/** What a client sees when they open their portal link. */
+export function PublicPortal() {
+  const { token } = useParams();
+  const toast = useToast();
+  const [state, setState] = useState<{ db: DB; clientId: ID } | null>(null);
+  const [error, setError] = useState('');
+
+  const load = useCallback(() => {
+    api<{ db: DB; clientId: ID }>('GET', `/portal/${token}`)
+      .then((r) => {
+        setState(r);
+        document.documentElement.style.setProperty('--brand', r.db.settings.brandColor);
+        document.title = r.db.settings.businessName;
+      })
+      .catch((e) => setError(e.message));
+  }, [token]);
+  useEffect(load, [load]);
+  useEffect(() => {
+    const onVis = () => document.visibilityState === 'visible' && load();
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [load]);
+
+  if (error) return <div className="splash error">{error}</div>;
+  if (!state) return <div className="splash">Loading…</div>;
+  const act: Act = async (action, success) => {
+    try {
+      setState(await api<{ db: DB; clientId: ID }>('POST', `/portal/${token}/actions`, action));
+      toast(success);
+      return true;
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error');
+      load();
+      return false;
+    }
+  };
+  return <PortalView db={state.db} clientId={state.clientId} act={act} />;
+}
+
+function PortalView({ db, clientId, act, banner }: { db: DB; clientId: ID; act: Act; banner?: React.ReactNode }) {
   const [tab, setTab] = useState<Tab>('bookings');
   const [logging, setLogging] = useState<{ programId: ID; dayId: ID } | null>(null);
   const c = db.clients.find((x) => x.id === clientId);
-  if (!c) return <div className="page"><Empty>Account not found. <Link to="/">Back</Link></Empty></div>;
+  if (!c) return <div className="splash">Account not found.</div>;
 
   const now = new Date();
   const cur = db.settings.currency;
@@ -124,16 +180,12 @@ export default function Portal() {
       ? `This is within the ${db.settings.lateCancelHours}-hour cancellation window, so the session will still be charged. Cancel anyway?`
       : 'Cancel this booking? Your credit will be returned.';
     if (!confirm(msg)) return;
-    let result = '';
-    if (!update((d) => void (result = cancelBooking(d, apptId, c.id, new Date())))) return;
-    toast(result === 'late-cancel' ? 'Cancelled (late – credit used)' : 'Cancelled – credit returned');
+    void act({ type: 'cancel', appointmentId: apptId }, late ? 'Cancelled (late – credit used)' : 'Cancelled – credit returned');
   };
 
   return (
     <div className="portal">
-      <div className="portal-banner">
-        Previewing the client portal as {c.firstName}. <Link to={`/clients/${c.id}`}>Back to trainer view</Link>
-      </div>
+      {banner && <div className="portal-banner">{banner}</div>}
       <header className="portal-head">
         <div className="brand">
           <span className="brand-mark">{db.settings.businessName.slice(0, 1)}</span>
@@ -211,7 +263,7 @@ export default function Portal() {
                           disabled={left === 0}
                           onClick={() => {
                             if (credits === 0 && !confirm("You have no credits left — you'll be invoiced for this class. Book anyway?")) return;
-                            update((d) => bookClient(d, a.id, c.id), `Booked into ${a.title}`);
+                            void act({ type: 'book', appointmentId: a.id }, `Booked into ${a.title}`);
                           }}
                         >
                           Book
@@ -350,7 +402,7 @@ export default function Portal() {
           </section>
         )}
       </div>
-      {logging && <LogWorkoutModal clientId={c.id} {...logging} onClose={() => setLogging(null)} />}
+      {logging && <LogWorkoutModal db={db} act={act} clientId={c.id} {...logging} onClose={() => setLogging(null)} />}
     </div>
   );
 }

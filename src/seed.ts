@@ -1,4 +1,4 @@
-import type { Client, DB, Exercise, Food, Program, Settings } from './types';
+import type { Client, DB, Exercise, Food, Product, Program, Settings } from './types';
 import { addDays, startOfWeek } from './utils';
 import { bookClient, completeAppointment, createAppointments, markInvoicePaid, sellPackage } from './logic';
 
@@ -82,6 +82,13 @@ const FOODS: Food[] = [
   f('fd-pasta', 'Pasta (cooked)', '180 g', 284, 10, 56, 1.6),
 ];
 
+const PRODUCTS: Product[] = [
+  { id: 'pr-single', name: 'Single PT session', sessions: 1, price: 45, validDays: 30, description: 'Pay-as-you-go one-to-one session.' },
+  { id: 'pr-10', name: '10 PT sessions', sessions: 10, price: 400, validDays: 120, description: 'Save £50 with a 10-pack.' },
+  { id: 'pr-20', name: '20 PT sessions', sessions: 20, price: 760, validDays: 210, description: 'Best value for committed clients.' },
+  { id: 'pr-class8', name: 'Group class 8-pass', sessions: 8, price: 80, validDays: 60, description: 'Eight small-group classes.' },
+];
+
 const item = (id: string, exerciseId: string, sets: number, reps: string, rest = '90s', notes = '') => ({ id, exerciseId, sets, reps, rest, notes });
 
 const PROGRAMS: Program[] = [
@@ -127,18 +134,26 @@ const c = (id: string, firstName: string, lastName: string, extra: Partial<Clien
   ...extra,
 });
 
+/**
+ * A brand-new trainer's workspace: no clients yet, but with the exercise
+ * and food libraries and some starter packages so they can get going.
+ */
+export function starterDB(trainerName: string): DB {
+  const db = emptyDB();
+  db.settings = { ...db.settings, trainerName, businessName: `${trainerName.split(' ')[0]}'s Training` };
+  db.exercises = EXERCISES.map((e) => ({ ...e }));
+  db.foods = FOODS.map((x) => ({ ...x }));
+  db.products = PRODUCTS.map((p) => ({ ...p }));
+  return db;
+}
+
 /** A realistic demo business, anchored to `now` so the calendar is populated. */
 export function seedDB(now = new Date()): DB {
   const db = emptyDB();
   db.exercises = EXERCISES.map((e) => ({ ...e }));
   db.foods = FOODS.map((x) => ({ ...x }));
   db.programs = structuredClone(PROGRAMS);
-  db.products = [
-    { id: 'pr-single', name: 'Single PT session', sessions: 1, price: 45, validDays: 30, description: 'Pay-as-you-go one-to-one session.' },
-    { id: 'pr-10', name: '10 PT sessions', sessions: 10, price: 400, validDays: 120, description: 'Save £50 with a 10-pack.' },
-    { id: 'pr-20', name: '20 PT sessions', sessions: 20, price: 760, validDays: 210, description: 'Best value for committed clients.' },
-    { id: 'pr-class8', name: 'Group class 8-pass', sessions: 8, price: 80, validDays: 60, description: 'Eight small-group classes.' },
-  ];
+  db.products = PRODUCTS.map((p) => ({ ...p }));
 
   const ago = (d: number) => addDays(now, -d).toISOString();
   db.clients = [

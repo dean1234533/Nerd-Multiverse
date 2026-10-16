@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useStore } from '../store';
+import { api, appLink, shareLink } from '../api';
 import type { Assessment, ID } from '../types';
 import {
+  clientName,
   creditsRemaining,
   deleteClient,
   invoiceTotals,
@@ -48,7 +50,7 @@ export function SellPackageModal({ clientId, onClose }: { clientId: ID; onClose:
           className="form"
           onSubmit={(e) => {
             e.preventDefault();
-            if (update((d) => void sellPackage(d, clientId, productId, new Date(), paid || undefined), 'Package added and invoice raised')) onClose();
+            if (update((d) => void sellPackage(d, clientId, productId, new Date(), paid || undefined), `Sold ${db.products.find((p) => p.id === productId)?.name} to ${clientName(db, clientId)}${paid ? ` (paid by ${paid.toLowerCase()})` : ' (invoiced)'}`)) onClose();
           }}
         >
           <div className="options">
@@ -84,7 +86,7 @@ export function SellPackageModal({ clientId, onClose }: { clientId: ID; onClose:
 }
 
 function AssessmentModal({ clientId, onClose }: { clientId: ID; onClose: () => void }) {
-  const { update } = useStore();
+  const { db, update } = useStore();
   const [date, setDate] = useState(toDateInput(new Date()));
   const [vals, setVals] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState('');
@@ -99,7 +101,7 @@ function AssessmentModal({ clientId, onClose }: { clientId: ID; onClose: () => v
             const v = parseFloat(vals[k as string]);
             if (!Number.isNaN(v)) (a as unknown as Record<string, number>)[k as string] = v;
           }
-          if (update((d) => void d.assessments.push(a), 'Measurements saved')) onClose();
+          if (update((d) => void d.assessments.push(a), `Recorded measurements for ${clientName(db, clientId)}${a.weightKg !== undefined ? ` (weight ${a.weightKg} kg)` : ''}`)) onClose();
         }}
       >
         <Field label="Date">
@@ -128,9 +130,10 @@ function AssessmentModal({ clientId, onClose }: { clientId: ID; onClose: () => v
 
 export default function ClientDetail() {
   const { id } = useParams();
-  const { db, update } = useStore();
+  const { db, update, toast, workspaceId } = useStore();
   const nav = useNavigate();
   const [tab, setTab] = useState<Tab>('overview');
+  const [portalUrl, setPortalUrl] = useState('');
   const [modal, setModal] = useState<'edit' | 'book' | 'sell' | 'measure' | null>(null);
   const [openAppt, setOpenAppt] = useState<ID | null>(null);
   const [metric, setMetric] = useState<keyof Assessment>('weightKg');
@@ -138,6 +141,17 @@ export default function ClientDetail() {
 
   const c = db.clients.find((x) => x.id === id);
   if (!c) return <div className="page"><Empty>Client not found. <Link to="/clients">Back to clients</Link></Empty></div>;
+
+  const sendPortalLink = async (regenerate: boolean) => {
+    if (regenerate && !confirm('Create a new link? The old link will stop working.')) return;
+    try {
+      const r = await api<{ token: string }>('POST', `/workspaces/${workspaceId}/portal-links`, { clientId: c.id, regenerate });
+      setPortalUrl(appLink(`/p/${r.token}`));
+      if (regenerate) toast('New link created; the old one no longer works');
+    } catch (e) {
+      toast(e instanceof Error ? e.message : String(e), 'error');
+    }
+  };
 
   const now = new Date();
   const cur = db.settings.currency;
@@ -173,9 +187,12 @@ export default function ClientDetail() {
           </div>
         </div>
         <div className="actions wrap">
-          <Link className="btn ghost" to={`/portal/${c.id}`} target="_blank">
-            Client portal ↗
+          <Link className="btn ghost" to={`/portal/${c.id}`}>
+            Preview portal
           </Link>
+          <button className="btn ghost" onClick={() => void sendPortalLink(false)}>
+            Send portal link
+          </button>
           <button className="btn ghost" onClick={() => setModal('edit')}>
             Edit
           </button>
@@ -315,7 +332,7 @@ export default function ClientDetail() {
                 onChange={(e) => {
                   const pid = e.target.value;
                   setAssignPick('');
-                  if (pid) update((d) => void d.assignments.push({ id: uid(), clientId: c.id, programId: pid, assignedAt: new Date().toISOString() }), 'Program assigned');
+                  if (pid) update((d) => void d.assignments.push({ id: uid(), clientId: c.id, programId: pid, assignedAt: new Date().toISOString() }), `Assigned ${db.programs.find((p) => p.id === pid)?.name} to ${c.firstName} ${c.lastName}`);
                 }}
               >
                 <option value="">+ Assign program…</option>
@@ -343,7 +360,7 @@ export default function ClientDetail() {
                       <span className="muted small">
                         assigned {fmtDate(as.assignedAt)} · {logs} workout{logs === 1 ? '' : 's'} logged
                       </span>
-                      <button className="btn small ghost danger" onClick={() => update((d) => void (d.assignments = d.assignments.filter((x) => x.id !== as.id)), 'Program unassigned')}>
+                      <button className="btn small ghost danger" onClick={() => update((d) => void (d.assignments = d.assignments.filter((x) => x.id !== as.id)), `Unassigned ${p?.name ?? 'program'} from ${c.firstName} ${c.lastName}`)}>
                         Unassign
                       </button>
                     </li>
@@ -454,7 +471,7 @@ export default function ClientDetail() {
                   <strong>{fmtMoney(invoiceTotals(i, db.settings.taxRatePct).total, cur)}</strong>
                   <Badge tone={i.status === 'paid' ? 'good' : isOverdue(i, now) ? 'bad' : i.status === 'void' ? 'neutral' : 'warn'}>{isOverdue(i, now) ? 'overdue' : i.status}</Badge>
                   {i.status === 'sent' && (
-                    <button className="btn small ghost" onClick={() => update((d) => markInvoicePaid(d, i.id, 'Card', new Date()), 'Marked paid')}>
+                    <button className="btn small ghost" onClick={() => update((d) => markInvoicePaid(d, i.id, 'Card', new Date()), `Recorded payment for invoice #${i.number} (${c.firstName} ${c.lastName})`)}>
                       Mark paid
                     </button>
                   )}
@@ -470,7 +487,7 @@ export default function ClientDetail() {
           className="btn ghost danger"
           onClick={() => {
             if (confirm(`Delete ${c.firstName} ${c.lastName} and all their bookings, packages, invoices and measurements?`)) {
-              update((d) => deleteClient(d, c.id), 'Client deleted');
+              update((d) => deleteClient(d, c.id), `Deleted client ${c.firstName} ${c.lastName}`);
               nav('/clients');
             }
           }}
@@ -485,7 +502,7 @@ export default function ClientDetail() {
             initial={c}
             onCancel={() => setModal(null)}
             onSave={(nc) => {
-              update((d) => void (d.clients = d.clients.map((x) => (x.id === nc.id ? nc : x))), 'Saved');
+              update((d) => void (d.clients = d.clients.map((x) => (x.id === nc.id ? nc : x))), `Updated ${nc.firstName} ${nc.lastName}'s profile`);
               setModal(null);
             }}
           />
@@ -502,6 +519,41 @@ export default function ClientDetail() {
           })()}
           onClose={() => setModal(null)}
         />
+      )}
+      {portalUrl && (
+        <Modal title={`${c.firstName}'s portal link`} onClose={() => setPortalUrl('')}>
+          <p className="muted">
+            {c.firstName} can use this link to see their bookings and credits, book classes, follow their programs and log workouts. No password is needed, so only send it to them.
+          </p>
+          <div className="link-box">
+            <input readOnly value={portalUrl} onFocus={(e) => e.target.select()} aria-label="Portal link" />
+          </div>
+          <div className="actions wrap">
+            <button className="btn ghost danger" onClick={() => void sendPortalLink(true)}>
+              Replace link
+            </button>
+            {c.email && (
+              <a
+                className="btn ghost"
+                href={`mailto:${c.email}?subject=${encodeURIComponent(`Your ${db.settings.businessName} client portal`)}&body=${encodeURIComponent(`Hi ${c.firstName},\n\nHere's your personal link to book sessions, see your program and track your progress:\n\n${portalUrl}\n\n${db.settings.trainerName}`)}`}
+              >
+                Email
+              </a>
+            )}
+            <a className="btn ghost" href={`sms:${c.phone.replace(/\s/g, '')}?&body=${encodeURIComponent(`Hi ${c.firstName}, here's your ${db.settings.businessName} client portal: ${portalUrl}`)}`}>
+              Text message
+            </a>
+            <button
+              className="btn primary"
+              onClick={async () => {
+                const r = await shareLink(portalUrl, `${db.settings.businessName} client portal`, `Hi ${c.firstName}, here's your client portal:`);
+                if (r === 'copied') toast('Link copied');
+              }}
+            >
+              Copy / share
+            </button>
+          </div>
+        </Modal>
       )}
       {modal === 'sell' && <SellPackageModal clientId={c.id} onClose={() => setModal(null)} />}
       {modal === 'measure' && <AssessmentModal clientId={c.id} onClose={() => setModal(null)} />}

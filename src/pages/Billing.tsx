@@ -88,7 +88,7 @@ function InvoiceView({ id, onClose }: { id: ID; onClose: () => void }) {
         </button>
         {inv.status === 'sent' && (
           <div className="actions">
-            <button className="btn ghost danger" onClick={() => confirm('Void this invoice? Any unused package it issued will be withdrawn.') && update((d) => voidInvoice(d, inv.id), 'Invoice voided')}>
+            <button className="btn ghost danger" onClick={() => confirm('Void this invoice? Any unused package it issued will be withdrawn.') && update((d) => voidInvoice(d, inv.id), `Voided invoice #${inv.number}`)}>
               Void
             </button>
             <select value={method} onChange={(e) => setMethod(e.target.value)} aria-label="Payment method">
@@ -96,7 +96,7 @@ function InvoiceView({ id, onClose }: { id: ID; onClose: () => void }) {
               <option>Cash</option>
               <option>Bank transfer</option>
             </select>
-            <button className="btn primary" onClick={() => update((d) => markInvoicePaid(d, inv.id, method, new Date()), 'Payment recorded')}>
+            <button className="btn primary" onClick={() => update((d) => markInvoicePaid(d, inv.id, method, new Date()), `Recorded ${method.toLowerCase()} payment for invoice #${inv.number}${c ? ` (${c.firstName} ${c.lastName})` : ''}`)}>
               Record payment
             </button>
           </div>
@@ -120,7 +120,7 @@ function NewInvoiceModal({ onClose }: { onClose: () => void }) {
         onSubmit={(e) => {
           e.preventDefault();
           const clean = lines.filter((l) => l.description.trim());
-          if (update((d) => void createInvoice(d, clientId, clean, new Date(), dueDays), 'Invoice created')) onClose();
+          if (update((d) => void createInvoice(d, clientId, clean, new Date(), dueDays), `Created an invoice for ${clientName(db, clientId)}`)) onClose();
         }}
       >
         <div className="row">

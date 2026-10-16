@@ -63,7 +63,7 @@ export function NewAppointmentModal({ start, clientId, onClose }: { start: Date;
     const autoTitle = title.trim() || (type !== 'class' && clientIds.length === 1 ? `${clientName(db, clientIds[0]).split(' ')[0]} – ${TYPE_LABELS[type]}` : '');
     const ok = update(
       (d) => createAppointments(d, { title: autoTitle, type, start: new Date(when).toISOString(), durationMin: duration, location, capacity, notes, clientIds, repeatWeeks: repeat }),
-      repeat > 1 ? `${repeat} weekly appointments created` : 'Appointment created',
+      repeat > 1 ? `Created ${repeat} weekly ${autoTitle || TYPE_LABELS[type]} appointments from ${fmtDateTime(new Date(when))}` : `Created ${autoTitle || TYPE_LABELS[type]} on ${fmtDateTime(new Date(when))}`,
     );
     if (ok) onClose();
   };
@@ -156,7 +156,7 @@ export function AppointmentModal({ id, onClose }: { id: ID; onClose: () => void 
   const saveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (form.capacity < a.bookings.length) return toast('Capacity is below the number of bookings', 'error');
-    if (update((d) => updateAppointment(d, a.id, { ...form, start: new Date(form.start).toISOString() }), 'Appointment updated')) setEditing(false);
+    if (update((d) => updateAppointment(d, a.id, { ...form, start: new Date(form.start).toISOString() }), `Updated ${form.title} (${fmtDateTime(new Date(form.start))})`)) setEditing(false);
   };
 
   const copyReminder = async (clientId: ID) => {
@@ -230,7 +230,7 @@ export function AppointmentModal({ id, onClose }: { id: ID; onClose: () => void 
                   {usesCredit(a.type) && (b.creditPackageId ? <Badge tone="good">credit used</Badge> : a.status !== 'cancelled' && <Badge tone="bad">no credit – unpaid</Badge>)}
                   {a.status !== 'cancelled' && (
                     <>
-                      <select value={b.attendance} onChange={(e) => update((d) => setAttendance(d, a.id, b.clientId, e.target.value as Attendance))} aria-label="Attendance">
+                      <select value={b.attendance} onChange={(e) => update((d) => setAttendance(d, a.id, b.clientId, e.target.value as Attendance), `Marked ${clientName(db, b.clientId)} as ${e.target.value} for ${a.title} (${fmtDateTime(a.start)})`)} aria-label="Attendance">
                         {ATTENDANCE.map(([k, l]) => (
                           <option key={k} value={k}>
                             {l}
@@ -242,7 +242,7 @@ export function AppointmentModal({ id, onClose }: { id: ID; onClose: () => void 
                           <button className="btn small ghost" onClick={() => copyReminder(b.clientId)} title="Copy a reminder message">
                             Reminder
                           </button>
-                          <button className="btn small ghost danger" onClick={() => update((d) => removeBooking(d, a.id, b.clientId), 'Removed and credit refunded')}>
+                          <button className="btn small ghost danger" onClick={() => update((d) => removeBooking(d, a.id, b.clientId), `Removed ${clientName(db, b.clientId)} from ${a.title} (${fmtDateTime(a.start)}), credit refunded`)}>
                             Remove
                           </button>
                         </>
@@ -259,7 +259,7 @@ export function AppointmentModal({ id, onClose }: { id: ID; onClose: () => void 
               onChange={(e) => {
                 const cid = e.target.value;
                 setPick('');
-                if (cid) update((d) => bookClient(d, a.id, cid), `${clientName(db, cid)} booked`);
+                if (cid) update((d) => bookClient(d, a.id, cid), `Booked ${clientName(db, cid)} into ${a.title} (${fmtDateTime(a.start)})`);
               }}
             >
               <option value="">+ Book a client…</option>
@@ -277,7 +277,7 @@ export function AppointmentModal({ id, onClose }: { id: ID; onClose: () => void 
               className="btn ghost danger"
               onClick={() => {
                 if (confirm('Delete this appointment? Any credits used will be refunded.')) {
-                  if (update((d) => deleteAppointment(d, a.id), 'Appointment deleted')) onClose();
+                  if (update((d) => deleteAppointment(d, a.id), `Deleted ${a.title} (${fmtDateTime(a.start)})`)) onClose();
                 }
               }}
             >
@@ -289,10 +289,10 @@ export function AppointmentModal({ id, onClose }: { id: ID; onClose: () => void 
                   <button className="btn ghost" onClick={() => setEditing(true)}>
                     Edit
                   </button>
-                  <button className="btn ghost" onClick={() => confirm('Cancel this appointment for everyone? Credits will be refunded.') && update((d) => cancelAppointment(d, a.id), 'Appointment cancelled')}>
+                  <button className="btn ghost" onClick={() => confirm('Cancel this appointment for everyone? Credits will be refunded.') && update((d) => cancelAppointment(d, a.id), `Cancelled ${a.title} (${fmtDateTime(a.start)})`)}>
                     Cancel appointment
                   </button>
-                  <button className="btn primary" onClick={() => update((d) => completeAppointment(d, a.id), 'Marked complete')}>
+                  <button className="btn primary" onClick={() => update((d) => completeAppointment(d, a.id), `Completed ${a.title} (${fmtDateTime(a.start)})`)}>
                     Mark complete
                   </button>
                 </>
