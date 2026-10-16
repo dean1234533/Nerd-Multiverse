@@ -1,6 +1,27 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  startAfter,
+  Timestamp,
+  where,
+  type QueryConstraint,
+  type QueryDocumentSnapshot,
+} from 'firebase/firestore';
 import { api, appLink, shareLink, type User } from '../api';
+import { firestore, friendlyError, secretToken } from '../firebase';
+import { INVITE_DAYS, type ActivityDoc, type InviteDoc, type UserDoc, type WorkspaceDoc } from '../firestoreModel';
+import type { DB } from '../types';
+import { addDays, startOfWeek } from '../utils';
 import { useAuth } from '../auth';
 import { useToast } from '../store';
 import { useWorkspaceNav } from '../workspace';
@@ -23,12 +44,88 @@ interface Invite {
 }
 
 interface Activity {
-  id: number;
+  id: string;
   workspaceId: string;
+  actorUid: string;
   actorName: string;
   actorRole: string;
   message: string;
   createdAt: string;
+}
+
+const PAGE = 50;
+
+const toIso = (t: unknown) => (t instanceof Timestamp ? t.toDate().toISOString() : new Date().toISOString());
+
+function toActivity(d: QueryDocumentSnapshot): Activity {
+  const a = d.data() as ActivityDoc;
+  return { id: d.id, ...a, createdAt: toIso(a.createdAt) };
+}
+
+/** Everything the Team page shows about each person, computed from their workspace. */
+async function loadTeamData(): Promise<{ trainers: Trainer[]; invites: Invite[] }> {
+  const [users, workspaces, invites] = await Promise.all([
+    getDocs(collection(firestore, 'users')),
+    getDocs(collection(firestore, 'workspaces')),
+    getDocs(query(collection(firestore, 'invites'), where('used', '==', false))),
+  ]);
+  const wsById = new Map(workspaces.docs.map((d) => [d.id, d.data() as WorkspaceDoc]));
+  const weekStart = startOfWeek(new Date());
+  const weekEnd = addDays(weekStart, 7);
+  const trainers = await Promise.all(
+    users.docs.map(async (u): Promise<Trainer> => {
+      const p = u.data() as UserDoc;
+      const ws = wsById.get(u.id);
+      const d = ws ? (JSON.parse(ws.data) as DB) : undefined;
+      const week = d?.appointments.filter((a) => a.status !== 'cancelled' && new Date(a.start) >= weekStart && new Date(a.start) < weekEnd) ?? [];
+      const last = await getDocs(query(collection(firestore, 'activity'), where('workspaceId', '==', u.id), orderBy('createdAt', 'desc'), limit(1))).catch(() => null);
+      const lastAt = last?.docs[0] ? toIso((last.docs[0].data() as ActivityDoc).createdAt) : null;
+      return {
+        id: u.id,
+        email: p.email,
+        name: p.name,
+        role: p.role,
+        createdAt: p.createdAt,
+        disabled: p.disabled,
+        lastSeenAt: p.lastSeenAt ?? null,
+        workspaceId: u.id,
+        businessName: d?.settings.businessName ?? '',
+        lastActivityAt: lastAt,
+        stats: {
+          clients: d?.clients.length ?? 0,
+          activeClients: d?.clients.filter((c) => c.status === 'active').length ?? 0,
+          sessionsThisWeek: week.length,
+          completedThisWeek: week.filter((a) => a.status === 'completed').length,
+          workoutsLogged: d?.workoutLogs.length ?? 0,
+        },
+      };
+    }),
+  );
+  trainers.sort((a, b) => (a.role === b.role ? a.name.localeCompare(b.name) : a.role === 'owner' ? 1 : -1));
+  const now = new Date();
+  return {
+    trainers,
+    invites: invites.docs
+      .map((d) => ({ token: d.id, ...(d.data() as InviteDoc) }))
+      .filter((i) => i.kind === 'invite' && (i.expiresAt as Timestamp).toDate() > now)
+      .map((i) => ({ token: i.token, name: i.name, email: i.email, createdAt: toIso(i.createdAt), expiresAt: toIso(i.expiresAt) }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+  };
+}
+
+async function createLinkDoc(kind: InviteDoc['kind'], createdBy: string, fields: { name?: string; email?: string; userId?: string }): Promise<string> {
+  const token = secretToken();
+  await setDoc(doc(firestore, 'invites', token), {
+    kind,
+    name: fields.name ?? '',
+    email: fields.email ?? '',
+    userId: fields.userId ?? null,
+    createdBy,
+    createdAt: serverTimestamp(),
+    expiresAt: Timestamp.fromDate(addDays(new Date(), INVITE_DAYS)),
+    used: false,
+  } satisfies InviteDoc);
+  return token;
 }
 
 function ago(iso: string | null): string {
@@ -80,31 +177,45 @@ export default function Team() {
   const ws = useWorkspaceNav();
   const [team, setTeam] = useState<{ trainers: Trainer[]; invites: Invite[] } | null>(null);
   const [activity, setActivity] = useState<Activity[]>([]);
+  const [older, setOlder] = useState<Activity[]>([]);
+  const [cursor, setCursor] = useState<QueryDocumentSnapshot | null>(null);
   const [filter, setFilter] = useState('');
   const [hasMore, setHasMore] = useState(false);
   const [inviting, setInviting] = useState(false);
   const [inv, setInv] = useState({ name: '', email: '' });
   const [link, setLink] = useState<{ title: string; url: string; email?: string; intro: string } | null>(null);
 
-  const loadTeam = useCallback(() => api<{ trainers: Trainer[]; invites: Invite[] }>('GET', '/team').then(setTeam, (e) => toast(e.message, 'error')), [toast]);
-  const loadActivity = useCallback(
-    (before?: number) =>
-      api<{ items: Activity[] }>('GET', `/activity?limit=50${filter ? `&workspace=${filter}` : ''}${before ? `&before=${before}` : ''}`).then(
-        (r) => {
-          setActivity((cur) => (before ? [...cur, ...r.items] : r.items));
-          setHasMore(r.items.length === 50);
-        },
-        (e) => toast(e.message, 'error'),
-      ),
-    [filter, toast],
+  const loadTeam = useCallback(() => loadTeamData().then(setTeam, (e) => toast(friendlyError(e), 'error')), [toast]);
+
+  const activityQuery = useCallback(
+    (...extra: QueryConstraint[]) =>
+      query(collection(firestore, 'activity'), ...(filter ? [where('workspaceId', '==', filter)] : []), orderBy('createdAt', 'desc'), ...extra, limit(PAGE)),
+    [filter],
   );
 
-  useEffect(() => void loadTeam(), [loadTeam]);
+  // Newest activity, live.
   useEffect(() => {
-    void loadActivity();
-    const id = setInterval(() => void loadActivity(), 30_000);
-    return () => clearInterval(id);
-  }, [loadActivity]);
+    setOlder([]);
+    return onSnapshot(
+      activityQuery(),
+      (snap) => {
+        setActivity(snap.docs.map(toActivity));
+        setCursor(snap.docs[snap.docs.length - 1] ?? null);
+        setHasMore(snap.docs.length === PAGE);
+      },
+      (e) => toast(friendlyError(e), 'error'),
+    );
+  }, [activityQuery, toast]);
+
+  const loadMore = async () => {
+    if (!cursor) return;
+    const snap = await getDocs(activityQuery(startAfter(cursor)));
+    setOlder((o) => [...o, ...snap.docs.map(toActivity)]);
+    setCursor(snap.docs[snap.docs.length - 1] ?? null);
+    setHasMore(snap.docs.length === PAGE);
+  };
+
+  useEffect(() => void loadTeam(), [loadTeam]);
 
   if (user?.role !== 'owner') return <div className="page"><Empty>Only the account owner can see the team.</Empty></div>;
   if (!team) return <div className="splash">Loading…</div>;
@@ -125,18 +236,18 @@ export default function Team() {
   const createInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const r = await api<{ token: string }>('POST', '/invites', inv);
+      const token = await createLinkDoc('invite', user.id, { name: inv.name.trim(), email: inv.email.trim() });
       setInviting(false);
       setLink({
         title: 'Your RepMinder invite',
-        url: appLink(`/invite/${r.token}`),
+        url: appLink(`/invite/${token}`),
         email: inv.email,
         intro: `Hi${inv.name ? ` ${inv.name.split(' ')[0]}` : ''}, ${user.name} has invited you to RepMinder. Set up your trainer account here:`,
       });
       setInv({ name: '', email: '' });
       void loadTeam();
     } catch (err) {
-      toast(err instanceof Error ? err.message : String(err), 'error');
+      toast(friendlyError(err), 'error');
     }
   };
 
@@ -208,9 +319,9 @@ export default function Team() {
                       <button
                         className="btn small ghost"
                         onClick={async () => {
-                          const r = await api<{ token: string }>('POST', `/users/${t.id}/reset`, {}).catch((e) => toast(e.message, 'error'));
-                          if (r)
-                            setLink({ title: 'Reset your RepMinder password', url: appLink(`/invite/${r.token}`), email: t.email, intro: `Hi ${t.name.split(' ')[0]}, use this link to set a new RepMinder password:` });
+                          const token = await createLinkDoc('reset', user.id, { userId: t.id }).catch((e) => void toast(friendlyError(e), 'error'));
+                          if (token)
+                            setLink({ title: 'Reset your RepMinder password', url: appLink(`/invite/${token}`), email: t.email, intro: `Hi ${t.name.split(' ')[0]}, use this link to set a new RepMinder password:` });
                         }}
                       >
                         Reset password
@@ -219,7 +330,7 @@ export default function Team() {
                         className={`btn small ghost ${t.disabled ? '' : 'danger'}`}
                         onClick={async () => {
                           if (!t.disabled && !confirm(`Disable ${t.name}? They'll be signed out and their client portal links will stop working. Their data is kept.`)) return;
-                          await api('PATCH', `/users/${t.id}`, { disabled: !t.disabled }).then(
+                          await api('POST', `/users/${t.id}/disabled`, { disabled: !t.disabled }).then(
                             () => toast(t.disabled ? `${t.name} re-enabled` : `${t.name} disabled`),
                             (e) => toast(e.message, 'error'),
                           );
@@ -255,7 +366,7 @@ export default function Team() {
                 >
                   Show link
                 </button>
-                <button className="btn small ghost danger" onClick={() => api('DELETE', `/invites/${i.token}`).then(() => (toast('Invite revoked'), loadTeam()))}>
+                <button className="btn small ghost danger" onClick={() => deleteDoc(doc(firestore, 'invites', i.token)).then(() => (toast('Invite revoked'), loadTeam()))}>
                   Revoke
                 </button>
               </li>
@@ -280,13 +391,14 @@ export default function Team() {
           <Empty>Nothing logged yet.</Empty>
         ) : (
           <ul className="list activity">
-            {activity.map((a) => (
+            {[...activity, ...older].map((a) => (
               <li key={a.id} className="list-row">
                 <span className="time small" title={new Date(a.createdAt).toLocaleString()}>
                   {fmtDateTime(a.createdAt)}
                 </span>
                 <span className="grow">
-                  <strong>{a.actorName}</strong> {a.actorRole === 'client' && <Badge tone="brand">client</Badge>} <span>{a.message}</span>
+                  <strong>{a.actorName}</strong> {a.actorRole === 'client' && <Badge tone="brand">client</Badge>}
+                  {a.actorRole === 'owner' && a.actorUid !== a.workspaceId && <Badge tone="warn">owner</Badge>} <span>{a.message}</span>
                 </span>
                 {!filter && byWs.get(a.workspaceId) && (
                   <button className="btn small ghost" onClick={() => openWorkspace(a.workspaceId)} title="Open this trainer's workspace">
@@ -298,7 +410,7 @@ export default function Team() {
           </ul>
         )}
         {hasMore && (
-          <button className="btn ghost" onClick={() => void loadActivity(activity[activity.length - 1]?.id)}>
+          <button className="btn ghost" onClick={() => void loadMore()}>
             Load more
           </button>
         )}

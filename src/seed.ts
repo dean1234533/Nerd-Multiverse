@@ -1,6 +1,6 @@
-import type { Client, DB, Exercise, Food, Product, Program, Settings } from './types';
-import { addDays, startOfWeek } from './utils';
-import { bookClient, completeAppointment, createAppointments, markInvoicePaid, sellPackage } from './logic';
+import type { Client, DB, Exercise, Food, Product, Program, Settings } from './types.js';
+import { addDays, startOfWeek } from './utils.js';
+import { bookClient, completeAppointment, createAppointments, markInvoicePaid, sellPackage } from './logic.js';
 
 export const DEFAULT_SETTINGS: Settings = {
   businessName: 'Peak Performance PT',

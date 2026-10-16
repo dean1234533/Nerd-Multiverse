@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useStore } from '../store';
-import { api, appLink, shareLink } from '../api';
+import { appLink, shareLink } from '../api';
+import { portalLinkToken } from '../portalLinks';
+import { friendlyError } from '../firebase';
 import type { Assessment, ID } from '../types';
 import {
   clientName,
@@ -145,11 +147,10 @@ export default function ClientDetail() {
   const sendPortalLink = async (regenerate: boolean) => {
     if (regenerate && !confirm('Create a new link? The old link will stop working.')) return;
     try {
-      const r = await api<{ token: string }>('POST', `/workspaces/${workspaceId}/portal-links`, { clientId: c.id, regenerate });
-      setPortalUrl(appLink(`/p/${r.token}`));
+      setPortalUrl(appLink(`/p/${await portalLinkToken(workspaceId, c.id, regenerate)}`));
       if (regenerate) toast('New link created; the old one no longer works');
     } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), 'error');
+      toast(friendlyError(e), 'error');
     }
   };
 

@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
 import { api } from '../api';
 import { useAuth } from '../auth';
+import { auth, friendlyError } from '../firebase';
 import { Field } from '../components/ui';
 import { resetInstallSnooze } from '../components/InstallBanner';
 
@@ -30,7 +32,7 @@ function useSubmit() {
     try {
       await fn();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(friendlyError(e));
     } finally {
       setBusy(false);
     }
@@ -39,20 +41,21 @@ function useSubmit() {
 }
 
 export function Login() {
-  const { refresh } = useAuth();
+  const { notice } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [sent, setSent] = useState('');
   const { busy, error, run } = useSubmit();
   return (
     <AuthCard title="Sign in" sub="This app is private. Accounts are created by invitation only.">
+      {notice && <p className="error">{notice}</p>}
       <form
         className="form"
         onSubmit={(e) => {
           e.preventDefault();
           void run(async () => {
-            await api('POST', '/login', { email, password });
             resetInstallSnooze();
-            await refresh();
+            await signInWithEmailAndPassword(auth, email.trim(), password);
           });
         }}
       >
@@ -66,7 +69,25 @@ export function Login() {
         <button className="btn primary block" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
-        <p className="muted small center">Forgotten your password? Ask the account owner for a reset link.</p>
+        {sent ? (
+          <p className="muted small center">{sent}</p>
+        ) : (
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => {
+              if (!email.trim()) return void run(async () => Promise.reject(new Error('Enter your email first, then tap "Forgot password?"')));
+              void run(async () => {
+                await sendPasswordResetEmail(auth, email.trim()).catch((e) => {
+                  if ((e as { code?: string }).code !== 'auth/user-not-found') throw e;
+                });
+                setSent(`If ${email.trim()} has an account, a reset email is on its way. Check your spam folder too.`);
+              });
+            }}
+          >
+            Forgot password?
+          </button>
+        )}
       </form>
     </AuthCard>
   );
@@ -96,9 +117,9 @@ function PasswordFields({ password, setPassword }: { password: string; setPasswo
 }
 
 export function Setup() {
-  const { token } = useParams();
-  const { refresh, user } = useAuth();
+  const { user } = useAuth();
   const nav = useNavigate();
+  const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -107,21 +128,24 @@ export function Setup() {
     if (user) nav('/', { replace: true });
   }, [user, nav]);
   return (
-    <AuthCard title="Create your owner account" sub="This is your private login. You'll invite trainers from the Team page afterwards.">
+    <AuthCard title="Create your owner account" sub="This is your private login. You'll invite trainers from the Team page afterwards. This can only be done once.">
       <form
         className="form"
         onSubmit={(e) => {
           e.preventDefault();
           void run(async () => {
-            await api('POST', '/setup', { token, name, email, password });
+            const r = await api<{ email: string }>('POST', '/setup', { code, name, email, password });
             resetInstallSnooze();
-            await refresh();
+            await signInWithEmailAndPassword(auth, r.email, password);
             nav('/', { replace: true });
           });
         }}
       >
+        <Field label="Setup code" hint="The SETUP_CODE you set in Vercel">
+          <input required value={code} onChange={(e) => setCode(e.target.value)} autoFocus autoComplete="off" />
+        </Field>
         <Field label="Your name">
-          <input required value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          <input required value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="Email">
           <input type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -138,7 +162,7 @@ export function Setup() {
 
 export function AcceptInvite() {
   const { token } = useParams();
-  const { refresh, user, logout } = useAuth();
+  const { user, logout } = useAuth();
   const nav = useNavigate();
   const [invite, setInvite] = useState<{ kind: 'invite' | 'reset'; name: string; email: string } | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -176,9 +200,9 @@ export function AcceptInvite() {
         onSubmit={(e) => {
           e.preventDefault();
           void run(async () => {
-            await api('POST', `/invites/${token}/accept`, reset ? { password } : { name, email, password });
+            const r = await api<{ email: string }>('POST', `/invites/${token}/accept`, reset ? { password } : { name, email, password });
             resetInstallSnooze();
-            await refresh();
+            await signInWithEmailAndPassword(auth, r.email, password);
             nav('/', { replace: true });
           });
         }}

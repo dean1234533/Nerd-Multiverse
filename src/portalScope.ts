@@ -2,9 +2,9 @@
 // their portal link, and applies the few actions a client may take.
 // Runs on the server; the result is a valid DB so the portal UI can reuse
 // the normal business-logic helpers.
-import type { DB, ID, WorkoutLog } from './types';
-import { bookClient, cancelBooking } from './logic';
-import { addDays, uid } from './utils';
+import type { DB, ID, WorkoutLog } from './types.js';
+import { bookClient, cancelBooking } from './logic.js';
+import { addDays, uid } from './utils.js';
 
 /** Placeholder id for other clients' bookings, so capacity still adds up. */
 export const OTHER_CLIENT = '__other__';

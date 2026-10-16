@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { StoreProvider, useStore } from './store';
 import { useAuth } from './auth';
-import { api } from './api';
+import { firebaseConfigured, firestore } from './firebase';
+import { collection, getDocs } from 'firebase/firestore';
+import type { UserDoc } from './firestoreModel';
 import { WorkspaceCtx, useWorkspaceNav } from './workspace';
 import Dashboard from './pages/Dashboard';
 import Clients from './pages/Clients';
@@ -61,11 +63,22 @@ export default function App() {
       </Routes>
     );
   }
+  if (!firebaseConfigured)
+    return (
+      <div className="auth-wrap">
+        <div className="auth-card card">
+          <h1>Connect Firebase</h1>
+          <p>
+            This deployment has no Firebase settings yet. Add the <code>VITE_FIREBASE_*</code> environment variables in Vercel (see <code>.env.example</code> and the README), then redeploy.
+          </p>
+        </div>
+      </div>
+    );
   if (auth.loading) return <div className="splash">Loading…</div>;
-  if (loc.pathname.startsWith('/setup/') || loc.pathname.startsWith('/invite/')) {
+  if (loc.pathname === '/setup' || loc.pathname.startsWith('/invite/')) {
     return (
       <Routes>
-        <Route path="/setup/:token" element={<Setup />} />
+        <Route path="/setup" element={<Setup />} />
         <Route path="/invite/:token" element={<AcceptInvite />} />
       </Routes>
     );
@@ -75,8 +88,11 @@ export default function App() {
       return (
         <div className="auth-wrap">
           <div className="auth-card card">
-            <h1>Almost there</h1>
-            <p>No owner account has been created yet. Open the one-time setup link printed in the server log when the app started, or set <code>OWNER_EMAIL</code> and <code>OWNER_PASSWORD</code> and restart.</p>
+            <h1>Welcome to RepMinder</h1>
+            <p>No owner account exists yet. Create yours using the setup code you set in Vercel.</p>
+            <a className="btn primary block" href="#/setup">
+              Create owner account
+            </a>
           </div>
         </div>
       );
@@ -116,7 +132,15 @@ function WorkspaceSwitcher() {
   const nav = useNavigate();
   const [list, setList] = useState<{ workspaceId: string; name: string; disabled: boolean; role: string }[]>([]);
   useEffect(() => {
-    api<{ trainers: { workspaceId: string; name: string; disabled: boolean; role: string }[] }>('GET', '/team').then((r) => setList(r.trainers), () => undefined);
+    getDocs(collection(firestore, 'users')).then(
+      (snap) =>
+        setList(
+          snap.docs
+            .map((d) => ({ workspaceId: d.id, ...(d.data() as UserDoc) }))
+            .sort((a, b) => (a.role === b.role ? a.name.localeCompare(b.name) : a.role === 'owner' ? -1 : 1)),
+        ),
+      () => undefined,
+    );
   }, [ws.current]);
   if (list.length < 2) return null;
   return (

@@ -10,8 +10,8 @@ import type {
   Invoice,
   InvoiceLine,
   MealPlan,
-} from './types';
-import { addDays, uid } from './utils';
+} from './types.js';
+import { addDays, uid } from './utils.js';
 
 export const TYPE_LABELS: Record<AppointmentType, string> = {
   pt: 'PT session',

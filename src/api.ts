@@ -1,3 +1,5 @@
+import { auth } from './firebase';
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -8,15 +10,15 @@ export class ApiError extends Error {
   }
 }
 
+/** Call the app's serverless API, sending the signed-in user's ID token when there is one. */
 export async function api<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  const token = await auth.currentUser?.getIdToken();
+  if (token) headers.authorization = `Bearer ${token}`;
   let res: Response;
   try {
-    res = await fetch(`/api${path}`, {
-      method,
-      credentials: 'same-origin',
-      headers: body === undefined ? {} : { 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    res = await fetch(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   } catch {
     throw new ApiError(0, "Can't reach the server. Check your connection.");
   }

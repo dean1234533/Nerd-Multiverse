@@ -1,0 +1,16 @@
+{
+  // Checks the serverless function the way Node runs it on Vercel (ESM with
+  // explicit .js import extensions), so a missing extension fails the build
+  // here instead of crashing in production.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["api", "server"]
+}

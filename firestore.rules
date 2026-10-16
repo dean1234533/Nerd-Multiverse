@@ -1,0 +1,94 @@
+rules_version = '2';
+
+// Who can do what, enforced by Firebase for every read and write from the app.
+// - Trainers: only their own workspace (workspaces/{their uid}).
+// - The owner: every workspace, the team list, invites and the activity log.
+// - Clients have no access here; their portal goes through the /api function.
+// - Disabled users can't read or write anything.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function active() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && profile().disabled == false;
+    }
+    function isOwner() {
+      return active() && profile().role == 'owner';
+    }
+    function canAccess(workspaceId) {
+      return active() && (request.auth.uid == workspaceId || profile().role == 'owner');
+    }
+    function onlyChanges(keys) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+    }
+
+    match /users/{uid} {
+      allow get: if (signedIn() && request.auth.uid == uid) || isOwner();
+      allow list: if isOwner();
+      allow update: if active() && request.auth.uid == uid
+        && onlyChanges(['lastSeenAt'])
+        && request.resource.data.lastSeenAt is string;
+      // Accounts are created and disabled only by the /api function.
+    }
+
+    match /workspaces/{workspaceId} {
+      allow get: if canAccess(workspaceId);
+      allow list: if isOwner();
+      // Saves must bump the version by exactly one, so two people editing at
+      // once can't silently overwrite each other.
+      allow update: if canAccess(workspaceId)
+        && request.resource.data.keys().hasOnly(['data', 'version', 'updatedAt', 'updatedBy'])
+        && request.resource.data.data is string
+        && request.resource.data.version == resource.data.version + 1
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    match /activity/{id} {
+      allow read: if isOwner();
+      allow create: if canAccess(request.resource.data.workspaceId)
+        && request.resource.data.keys().hasOnly(['workspaceId', 'actorUid', 'actorName', 'actorRole', 'message', 'createdAt'])
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.actorName == profile().name
+        && request.resource.data.actorRole == profile().role
+        && request.resource.data.message is string
+        && request.resource.data.message.size() > 0
+        && request.resource.data.message.size() <= 500
+        && request.resource.data.createdAt == request.time;
+    }
+
+    // The document id is the secret part of the link.
+    match /invites/{token} {
+      allow read, delete: if isOwner();
+      allow create: if isOwner()
+        && token.size() >= 32
+        && request.resource.data.keys().hasOnly(['kind', 'name', 'email', 'userId', 'createdBy', 'createdAt', 'expiresAt', 'used'])
+        && request.resource.data.kind in ['invite', 'reset']
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.used == false;
+    }
+
+    match /portalLinks/{token} {
+      allow read: if active() && (resource.data.workspaceId == request.auth.uid || isOwner());
+      allow create: if canAccess(request.resource.data.workspaceId)
+        && token.size() >= 32
+        && request.resource.data.keys().hasOnly(['workspaceId', 'clientId', 'createdAt', 'revoked'])
+        && request.resource.data.clientId is string
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.revoked == false;
+      allow update: if canAccess(resource.data.workspaceId)
+        && onlyChanges(['revoked'])
+        && request.resource.data.revoked == true;
+    }
+
+    // meta/setup and anything else: server only.
+  }
+}
