@@ -1326,3 +1326,32 @@ code {
 .link-btn:hover {
   text-decoration: underline;
 }
+
+/* ---------- WhatsApp support button ---------- */
+.wa-support {
+  position: fixed;
+  z-index: 50;
+  right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 10px 12px;
+  border-radius: 999px;
+  background: #25d366;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 20%);
+}
+.wa-support:hover {
+  background: #1ebe5a;
+  text-decoration: none;
+}
+@media (max-width: 860px) {
+  .wa-support {
+    padding: 12px;
+  }
+  .wa-support-label {
+    display: none;
+  }
+}

@@ -5,6 +5,7 @@ import { ToastProvider } from './store';
 import { AuthProvider } from './auth';
 import { capturePromptEvent } from './components/InstallBanner';
 import App from './App';
+import WhatsAppSupport from './components/WhatsAppSupport';
 import './styles.css';
 
 capturePromptEvent();
@@ -21,6 +22,7 @@ createRoot(document.getElementById('root')!).render(
       <ToastProvider>
         <AuthProvider>
           <App />
+          <WhatsAppSupport />
         </AuthProvider>
       </ToastProvider>
     </HashRouter>
