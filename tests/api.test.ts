@@ -1,6 +1,6 @@
 // Serverless API tests against the Auth + Firestore emulators. Run with `npm run test:firebase`.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { Mail } from '../server/notify';
+import type { PushPayload, PushSub } from '../server/notify';
 import type { AddressInfo } from 'node:net';
 import { createServer, type Server } from 'node:http';
 import { Timestamp } from 'firebase-admin/firestore';
@@ -18,8 +18,10 @@ const SETUP_CODE = 'correct-horse-battery';
 const { auth, db } = admin();
 let server: Server;
 let base = '';
-const sent: Mail[] = [];
-const ADMIN = 'admin@example.com';
+const sent: (PushPayload & { endpoint: string })[] = [];
+const ADMIN_DEVICE = 'https://push.example/admin';
+const JO_DEVICE = 'https://push.example/jo';
+const GONE_DEVICE = 'https://push.example/gone';
 
 beforeAll(async () => {
   await fetch(`http://${AUTH_HOST}/emulator/v1/projects/${PROJECT}/accounts`, { method: 'DELETE' });
@@ -28,8 +30,13 @@ beforeAll(async () => {
     auth,
     db,
     setupCode: SETUP_CODE,
-    adminEmail: ADMIN,
-    mailer: async (m) => void sent.push(m),
+    push: {
+      publicKey: 'test-public-key',
+      send: async (sub: PushSub, p: PushPayload) => {
+        if (sub.endpoint === GONE_DEVICE) throw Object.assign(new Error('gone'), { statusCode: 410 });
+        sent.push({ ...p, endpoint: sub.endpoint });
+      },
+    },
   })).listen(0);
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
 });
@@ -93,6 +100,12 @@ describe('owner setup', () => {
     expect((await db.doc(`workspaces/${uid}`).get()).data()?.version).toBe(1);
     expect((await call('POST', '/setup', { code: SETUP_CODE, name: 'X', email: 'x@example.com', password: 'supersecret' })).status).toBe(409);
     expect((await call('GET', '/status')).body.needsSetup).toBe(false);
+    const keys = { p256dh: 'k', auth: 'a' };
+    expect((await call('POST', '/push/subscribe', { endpoint: ADMIN_DEVICE, keys }, ownerToken)).status).toBe(200);
+    expect((await call('POST', '/push/subscribe', { endpoint: GONE_DEVICE, keys }, ownerToken)).status).toBe(200);
+    expect((await call('POST', '/push/subscribe', { endpoint: 'http://insecure', keys }, ownerToken)).status).toBe(400);
+    expect((await call('POST', '/push/subscribe', { endpoint: ADMIN_DEVICE, keys })).status).toBe(401);
+    expect((await call('GET', '/push/key')).body).toEqual({ publicKey: 'test-public-key' });
   });
 });
 
@@ -108,10 +121,11 @@ describe('invite links', () => {
     expect((await call('POST', `/invites/${token}/accept`, { name: 'Eve', email: 'eve@example.com', password: 'eve-password' })).status).toBe(404);
   });
 
-  it('emails the admin when a trainer signs up', () => {
-    const mail = sent.find((m) => m.subject.includes('New trainer signed up'));
-    expect(mail).toMatchObject({ to: ADMIN });
-    expect(mail!.lines.join(' ')).toContain('jo@example.com');
+  it('pushes to the admin when a trainer signs up, and drops devices that are gone', async () => {
+    const note = sent.find((m) => m.title === 'New trainer signed up');
+    expect(note).toMatchObject({ endpoint: ADMIN_DEVICE });
+    expect(note!.body).toContain('jo@example.com');
+    expect((await db.collection('pushSubscriptions').where('endpoint', '==', GONE_DEVICE).get()).empty).toBe(true);
   });
 
   it('a failed sign-up leaves the link usable', async () => {
@@ -195,22 +209,29 @@ describe('client portal', () => {
 });
 
 describe('change notifications', () => {
-  it('a trainer saving changes emails the admin, not themselves', async () => {
+  it('subscribing the trainer device', async () => {
+    const joToken = await signIn('jo@example.com', 'new-jo-password');
+    expect((await call('POST', '/push/subscribe', { endpoint: JO_DEVICE, keys: { p256dh: 'k', auth: 'a' } }, joToken)).status).toBe(200);
+    // Someone else's device can't be unsubscribed.
+    await call('POST', '/push/unsubscribe', { endpoint: ADMIN_DEVICE }, joToken);
+    expect((await db.collection('pushSubscriptions').where('endpoint', '==', ADMIN_DEVICE).get()).size).toBe(1);
+  });
+
+  it('a trainer saving changes pushes to the admin, not themselves', async () => {
     const joToken = await signIn('jo@example.com', 'new-jo-password');
     sent.length = 0;
     const r = await call('POST', '/notify', { messages: ['Added client Pat Lee', 'Settings saved'] }, joToken);
     expect(r.body).toMatchObject({ sent: 2 });
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ to: ADMIN });
-    expect(sent[0].subject).toContain('Jo Smith');
-    expect(sent[0].lines.join('\n')).toContain('Added client Pat Lee');
+    expect(sent[0]).toMatchObject({ endpoint: ADMIN_DEVICE, title: 'Jo Smith' });
+    expect(sent[0].body).toContain('Added client Pat Lee');
   });
 
-  it('the owner editing a trainer workspace emails that trainer', async () => {
+  it('the owner editing a trainer workspace pushes to that trainer', async () => {
     sent.length = 0;
     const r = await call('POST', '/notify', { workspaceId: joUid, messages: ['Created a new program'] }, ownerToken);
     expect(r.status).toBe(200);
-    expect(sent).toEqual([expect.objectContaining({ to: 'jo@example.com' })]);
+    expect(sent).toEqual([expect.objectContaining({ endpoint: JO_DEVICE, body: 'Created a new program' })]);
   });
 
   it('the owner editing their own workspace sends nothing', async () => {

@@ -2,14 +2,14 @@
 // function (see api/index.ts). Everything else the web app does directly
 // against Firestore, guarded by firestore.rules.
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { FieldValue, Timestamp, type Firestore, type Transaction } from 'firebase-admin/firestore';
 import type { Auth } from 'firebase-admin/auth';
 import type { DB } from '../src/types.js';
 import type { ActivityDoc, InviteDoc, PortalLinkDoc, UserDoc, WorkspaceDoc } from '../src/firestoreModel.js';
 import { MAX_WORKSPACE_BYTES } from '../src/firestoreModel.js';
 import { starterDB } from '../src/seed.js';
-import type { Mailer } from './notify.js';
+import type { PushPayload, PushService, PushSub } from './notify.js';
 import { applyPortalAction, scopeForClient, type PortalAction } from '../src/portalScope.js';
 
 export class HttpError extends Error {
@@ -26,11 +26,9 @@ export interface ApiDeps {
   db: Firestore;
   /** Code required to create the owner account (env SETUP_CODE). */
   setupCode?: string;
-  /** Sends notification emails; omit to disable them. */
-  mailer?: Mailer;
-  /** Where admin emails go. Defaults to the owner account's email. */
-  adminEmail?: string;
-  /** Public URL of the app, used for the "Open RepMinder" link. */
+  /** Sends push notifications; omit to disable them. */
+  push?: PushService;
+  /** Public URL of the app; tapping a notification opens it. */
   appUrl?: string;
   now?: () => Date;
 }
@@ -64,7 +62,7 @@ const authErrors: Record<string, [number, string]> = {
   'auth/invalid-password': [400, 'Password must be at least 8 characters'],
 };
 
-export function createApi({ auth, db, setupCode, mailer, adminEmail, appUrl, now = () => new Date() }: ApiDeps) {
+export function createApi({ auth, db, setupCode, push, appUrl, now = () => new Date() }: ApiDeps) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '256kb' }));
@@ -92,23 +90,37 @@ export function createApi({ auth, db, setupCode, mailer, adminEmail, appUrl, now
     createdAt: FieldValue.serverTimestamp(),
   });
 
-  /** Email the admin (the owner, or ADMIN_EMAIL). Never throws: a mail failure must not break the action. */
-  const emailAdmin = async (subject: string, lines: string[]) => {
-    let to = adminEmail;
-    if (!to) {
-      const ownerUid = ((await setupRef.get()).data() as { ownerUid?: string } | undefined)?.ownerUid;
-      to = ownerUid ? ((await userRef(ownerUid).get()).data() as UserDoc | undefined)?.email : undefined;
+  const subsRef = db.collection('pushSubscriptions');
+  const subId = (endpoint: string) => createHash('sha256').update(endpoint).digest('hex');
+
+  /** Push to every device the given users have subscribed. Never throws: a push failure must not break the action. */
+  const pushToUsers = async (uids: (string | undefined)[], payload: PushPayload) => {
+    const ids = [...new Set(uids.filter((u): u is string => !!u))];
+    if (!push || !ids.length) return;
+    try {
+      const body = { ...payload, title: payload.title.slice(0, 120), body: payload.body.slice(0, 300), url: payload.url ?? appUrl };
+      const docs = (await Promise.all(Array.from({ length: Math.ceil(ids.length / 30) }, (_, i) => subsRef.where('uid', 'in', ids.slice(i * 30, i * 30 + 30)).get()))).flatMap((q) => q.docs);
+      await Promise.allSettled(
+        docs.map(async (d) => {
+          const sub = d.data() as PushSub;
+          try {
+            await push.send({ endpoint: sub.endpoint, keys: sub.keys }, body);
+          } catch (e) {
+            const code = (e as { statusCode?: number }).statusCode;
+            if (code === 404 || code === 410) await d.ref.delete(); // device unsubscribed
+            else console.error('Push failed:', code ?? e);
+          }
+        }),
+      );
+    } catch (e) {
+      console.error('Push notification failed:', e instanceof Error ? e.message : e);
     }
-    await emailTo(to, subject, lines);
   };
 
-  const emailTo = async (to: string | undefined, subject: string, lines: string[]) => {
-    if (!mailer || !to) return;
-    try {
-      await mailer({ to, subject, lines, link: appUrl });
-    } catch (e) {
-      console.error('Notification email failed:', e instanceof Error ? e.message : e);
-    }
+  /** Push to the owner (the admin). */
+  const pushToAdmin = async (payload: PushPayload) => {
+    const ownerUid = ((await setupRef.get()).data() as { ownerUid?: string } | undefined)?.ownerUid;
+    await pushToUsers([ownerUid], payload);
   };
 
   /** Create the Auth user plus their profile and starter workspace. */
@@ -210,7 +222,7 @@ export function createApi({ auth, db, setupCode, mailer, adminEmail, appUrl, now
           const email = validEmail(req.body.email);
           const name = str(req.body.name, 'Name', 120);
           await createAccount('trainer', name, email, validPassword(req.body.password));
-          await emailAdmin(`New trainer signed up: ${name}`, [`${name} (${email}) accepted their invite and created a trainer account.`, `Time: ${now().toISOString()}`]);
+          await pushToAdmin({ title: 'New trainer signed up', body: `${name} (${email}) created a trainer account.` });
           return { email };
         }
         if (inv.kind === 'reset' && inv.userId) {
@@ -218,7 +230,7 @@ export function createApi({ auth, db, setupCode, mailer, adminEmail, appUrl, now
           if (!u || u.disabled) throw new HttpError(404, 'Account not found');
           await auth.updateUser(inv.userId, { password: validPassword(req.body.password) });
           await auth.revokeRefreshTokens(inv.userId);
-          await emailAdmin(`Password reset completed: ${u.name}`, [`${u.name} (${u.email}) set a new password using a reset link.`]);
+          await pushToAdmin({ title: 'Password reset completed', body: `${u.name} set a new password using a reset link.` });
           return { email: u.email };
         }
         throw new HttpError(404, 'Invalid link');
@@ -243,16 +255,46 @@ export function createApi({ auth, db, setupCode, mailer, adminEmail, appUrl, now
       await auth.updateUser(uid, { disabled });
       if (disabled) await auth.revokeRefreshTokens(uid);
       await userRef(uid).update({ disabled });
-      await emailTo(target.email, disabled ? 'Your RepMinder account was disabled' : 'Your RepMinder account was re-enabled', [
-        disabled ? 'The account owner has disabled your access. Contact them if this is unexpected.' : 'The account owner has re-enabled your access. You can sign in again.',
-      ]);
+      await pushToUsers([uid], {
+        title: disabled ? 'Your account was disabled' : 'Your account was re-enabled',
+        body: disabled ? 'The owner has disabled your access. Contact them if this is unexpected.' : 'The owner has re-enabled your access. You can sign in again.',
+      });
       return { disabled };
+    }),
+  );
+
+  // ----- push subscriptions (one per browser/device) -----
+  r.get(
+    '/push/key',
+    wrap(async () => ({ publicKey: push?.publicKey ?? null })),
+  );
+
+  r.post(
+    '/push/subscribe',
+    wrap(async (req) => {
+      const me = await caller(req);
+      const endpoint = str(req.body.endpoint, 'endpoint', 2000);
+      const keys = req.body.keys as { p256dh?: unknown; auth?: unknown } | undefined;
+      if (!/^https:\/\//.test(endpoint) || typeof keys?.p256dh !== 'string' || typeof keys?.auth !== 'string') throw new HttpError(400, 'Invalid subscription');
+      await subsRef.doc(subId(endpoint)).set({ uid: me.uid, endpoint, keys: { p256dh: keys.p256dh.slice(0, 200), auth: keys.auth.slice(0, 100) }, createdAt: now().toISOString() });
+      return { ok: true };
+    }),
+  );
+
+  r.post(
+    '/push/unsubscribe',
+    wrap(async (req) => {
+      const me = await caller(req);
+      const ref = subsRef.doc(subId(str(req.body.endpoint, 'endpoint', 2000)));
+      const d = (await ref.get()).data() as { uid?: string } | undefined;
+      if (d && d.uid === me.uid) await ref.delete();
+      return { ok: true };
     }),
   );
 
   // ----- change notifications -----
   // The web app saves straight to Firestore, so after each save it tells us
-  // what changed and we email the right people. The messages are the same
+  // what changed and we push to the right people. The messages are the same
   // ones written to the activity log.
   r.post(
     '/notify',
@@ -269,16 +311,15 @@ export function createApi({ auth, db, setupCode, mailer, adminEmail, appUrl, now
 
       const owner = (await userRef(workspaceId).get()).data() as UserDoc | undefined;
       if (!owner) throw new HttpError(404, 'Workspace not found');
-      const lines = [...messages.map((m) => `• ${m}`), `By: ${me.name} (${me.role})`, `Time: ${now().toISOString()}`];
-      const subject = messages.length === 1 ? messages[0] : `${messages.length} changes`;
+      const list = messages.length === 1 ? messages[0] : messages.map((m) => `• ${m}`).join('\n');
 
       if (me.uid === workspaceId && me.role === 'trainer') {
-        await emailAdmin(`[${me.name}] ${subject}`, lines);
+        await pushToAdmin({ title: me.name, body: list });
       } else if (me.uid !== workspaceId) {
         // The owner changed a trainer's dashboard: tell the trainer.
-        await emailTo(owner.email, `Your dashboard was updated: ${subject}`, lines);
+        await pushToUsers([workspaceId], { title: 'Your dashboard was updated', body: list });
       }
-      // The owner changing their own workspace needs no email.
+      // The owner changing their own workspace needs no alert.
       return { sent: messages.length };
     }),
   );
@@ -331,9 +372,8 @@ export function createApi({ auth, db, setupCode, mailer, adminEmail, appUrl, now
         return d;
       });
       const trainer = (await userRef(link.workspaceId).get()).data() as UserDoc | undefined;
-      const lines = [`${clientName}: ${portalMessage}`, `Time: ${now().toISOString()}`];
-      await emailTo(trainer?.email, `${clientName} updated their portal`, lines);
-      await emailAdmin(`[${trainer?.name ?? 'Trainer'}] ${clientName} updated their portal`, lines);
+      await pushToUsers([link.workspaceId], { title: `${clientName} updated their portal`, body: portalMessage });
+      await pushToAdmin({ title: `${trainer?.name ?? 'Trainer'}: ${clientName} updated their portal`, body: portalMessage });
       return { clientId: link.clientId, db: scopeForClient(data, link.clientId, now()) };
     }),
   );

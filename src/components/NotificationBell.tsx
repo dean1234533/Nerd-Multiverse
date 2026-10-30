@@ -4,6 +4,7 @@ import { firestore } from '../firebase';
 import { useAuth } from '../auth';
 import { useToast } from '../store';
 import type { ActivityDoc } from '../firestoreModel';
+import { disablePush, enablePush, pushState, syncPush, type PushState } from '../push';
 
 interface Item extends Omit<ActivityDoc, 'createdAt'> {
   id: string;
@@ -32,6 +33,8 @@ export default function NotificationBell({ workspaceId }: { workspaceId: string 
   const [items, setItems] = useState<Item[]>([]);
   const [open, setOpen] = useState(false);
   const [seen, setSeen] = useState(0);
+  const [push, setPush] = useState<PushState>('unavailable');
+  const [busy, setBusy] = useState(false);
   const first = useRef(true);
   const uid = user?.id ?? '';
 
@@ -42,6 +45,22 @@ export default function NotificationBell({ workspaceId }: { workspaceId: string 
       setSeen(0);
     }
   }, [uid]);
+
+  useEffect(() => {
+    void syncPush();
+    void pushState().then(setPush);
+  }, [uid]);
+
+  const togglePush = async () => {
+    setBusy(true);
+    try {
+      setPush(push === 'on' ? await disablePush() : await enablePush());
+    } catch (e) {
+      toast(e instanceof Error ? e.message : 'Could not change push notifications', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   useEffect(() => {
     first.current = true;
@@ -89,6 +108,13 @@ export default function NotificationBell({ workspaceId }: { workspaceId: string 
       {open && (
         <div className="notif-panel card" role="dialog" aria-label="Notifications">
           <strong>Recent changes</strong>
+          {(push === 'on' || push === 'off') && (
+            <button className="btn small block" disabled={busy} onClick={() => void togglePush()}>
+              {push === 'on' ? 'Push alerts on – turn off' : 'Turn on push alerts'}
+            </button>
+          )}
+          {push === 'needs-install' && <p className="muted small">To get push alerts on iPhone/iPad, add RepMinder to your Home Screen and open it from there.</p>}
+          {push === 'denied' && <p className="muted small">Push alerts are blocked. Allow notifications for this site in your browser settings.</p>}
           {items.length === 0 ? (
             <p className="muted small">Nothing yet. Changes to your dashboard will show here.</p>
           ) : (

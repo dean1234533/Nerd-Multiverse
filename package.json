@@ -14,12 +14,14 @@
     "deploy:rules": "firebase deploy --only firestore:rules,firestore:indexes"
   },
   "dependencies": {
+    "@types/web-push": "^3.6.4",
     "express": "^4.22.3",
     "firebase": "^12.19.0",
     "firebase-admin": "^13.10.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-router-dom": "^7.18.4"
+    "react-router-dom": "^7.18.4",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.2",

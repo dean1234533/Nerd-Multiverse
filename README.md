@@ -125,3 +125,9 @@ npm run build          # typecheck + production build
 ## Limitations compared with the real product
 
 There is no payment gateway and no automatic SMS/email sending. Links and reminders are shared through your own email, messages or the share sheet.
+
+## Push notifications
+
+The owner (admin) is pushed when a trainer signs up, resets a password, saves a change, or a client updates their portal. Trainers are pushed when the owner edits their dashboard or a client updates their portal, and see the same changes in the bell in the sidebar.
+
+Setup: run `npx web-push generate-vapid-keys`, then set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` and `APP_URL` in Vercel (see `.env.example`) and redeploy. Each person opens the bell and taps **Turn on push alerts** on every device they want alerts on. On iPhone/iPad the app must be added to the Home Screen first.

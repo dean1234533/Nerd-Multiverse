@@ -106,6 +106,8 @@ describe('activity log', () => {
     await assertFails(addDoc(collection(as(JO), 'activity'), act(OWNER, JO, 'Jo', 'trainer')));
     await assertFails(getDocs(collection(as(JO), 'activity')));
     await assertSucceeds(getDocs(collection(as(OWNER), 'activity')));
+    // Push subscriptions are server-only.
+    await assertFails(getDocs(collection(as(OWNER), 'pushSubscriptions')));
     // A trainer can read their own workspace's log (the notification bell), not anyone else's.
     await assertSucceeds(getDocs(query(collection(as(JO), 'activity'), where('workspaceId', '==', JO))));
     await assertFails(getDocs(query(collection(as(JO), 'activity'), where('workspaceId', '==', OWNER))));
