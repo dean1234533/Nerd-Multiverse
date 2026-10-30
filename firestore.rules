@@ -1,7 +1,7 @@
 rules_version = '2';
 
 // Who can do what, enforced by Firebase for every read and write from the app.
-// - Trainers: only their own workspace (workspaces/{their uid}).
+// - Trainers: only their own workspace (workspaces/{their uid}) and its activity log.
 // - The owner: every workspace, the team list, invites and the activity log.
 // - Clients have no access here; their portal goes through the /api function.
 // - Disabled users can't read or write anything.
@@ -51,7 +51,8 @@ service cloud.firestore {
     }
 
     match /activity/{id} {
-      allow read: if isOwner();
+      // Trainers can read their own workspace's log (it feeds their notification bell).
+      allow read: if isOwner() || (active() && resource.data.workspaceId == request.auth.uid);
       allow create: if canAccess(request.resource.data.workspaceId)
         && request.resource.data.keys().hasOnly(['workspaceId', 'actorUid', 'actorName', 'actorRole', 'message', 'createdAt'])
         && request.resource.data.actorUid == request.auth.uid

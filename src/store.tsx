@@ -4,7 +4,7 @@ import { emptyDB } from './seed';
 import { collection, doc, getDoc, onSnapshot, runTransaction, serverTimestamp } from 'firebase/firestore';
 import { firestore, friendlyError } from './firebase';
 import { useAuth } from './auth';
-import type { User } from './api';
+import { api, type User } from './api';
 import { MAX_WORKSPACE_BYTES, type ActivityDoc, type UserDoc, type WorkspaceDoc } from './firestoreModel';
 
 // ---------- Toasts ----------
@@ -175,6 +175,8 @@ export function StoreProvider({ workspaceId, onNotFound, children }: { workspace
       });
       version.current = base + 1;
       setSync('saved');
+      // Tell the server what changed so the admin / trainer get emailed. Best effort.
+      if (messages.length) void api('POST', '/notify', { workspaceId, messages }).catch(() => undefined);
     } catch (e) {
       if (e instanceof Conflict) {
         version.current = e.latest.version;

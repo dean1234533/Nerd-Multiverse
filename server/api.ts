@@ -9,6 +9,7 @@ import type { DB } from '../src/types.js';
 import type { ActivityDoc, InviteDoc, PortalLinkDoc, UserDoc, WorkspaceDoc } from '../src/firestoreModel.js';
 import { MAX_WORKSPACE_BYTES } from '../src/firestoreModel.js';
 import { starterDB } from '../src/seed.js';
+import type { Mailer } from './notify.js';
 import { applyPortalAction, scopeForClient, type PortalAction } from '../src/portalScope.js';
 
 export class HttpError extends Error {
@@ -25,6 +26,12 @@ export interface ApiDeps {
   db: Firestore;
   /** Code required to create the owner account (env SETUP_CODE). */
   setupCode?: string;
+  /** Sends notification emails; omit to disable them. */
+  mailer?: Mailer;
+  /** Where admin emails go. Defaults to the owner account's email. */
+  adminEmail?: string;
+  /** Public URL of the app, used for the "Open RepMinder" link. */
+  appUrl?: string;
   now?: () => Date;
 }
 
@@ -57,7 +64,7 @@ const authErrors: Record<string, [number, string]> = {
   'auth/invalid-password': [400, 'Password must be at least 8 characters'],
 };
 
-export function createApi({ auth, db, setupCode, now = () => new Date() }: ApiDeps) {
+export function createApi({ auth, db, setupCode, mailer, adminEmail, appUrl, now = () => new Date() }: ApiDeps) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '256kb' }));
@@ -84,6 +91,25 @@ export function createApi({ auth, db, setupCode, now = () => new Date() }: ApiDe
     message: message.slice(0, 500),
     createdAt: FieldValue.serverTimestamp(),
   });
+
+  /** Email the admin (the owner, or ADMIN_EMAIL). Never throws: a mail failure must not break the action. */
+  const emailAdmin = async (subject: string, lines: string[]) => {
+    let to = adminEmail;
+    if (!to) {
+      const ownerUid = ((await setupRef.get()).data() as { ownerUid?: string } | undefined)?.ownerUid;
+      to = ownerUid ? ((await userRef(ownerUid).get()).data() as UserDoc | undefined)?.email : undefined;
+    }
+    await emailTo(to, subject, lines);
+  };
+
+  const emailTo = async (to: string | undefined, subject: string, lines: string[]) => {
+    if (!mailer || !to) return;
+    try {
+      await mailer({ to, subject, lines, link: appUrl });
+    } catch (e) {
+      console.error('Notification email failed:', e instanceof Error ? e.message : e);
+    }
+  };
 
   /** Create the Auth user plus their profile and starter workspace. */
   const createAccount = async (role: UserDoc['role'], name: string, email: string, password: string, extra?: (tx: Transaction, uid: string) => void) => {
@@ -182,7 +208,9 @@ export function createApi({ auth, db, setupCode, now = () => new Date() }: ApiDe
       try {
         if (inv.kind === 'invite') {
           const email = validEmail(req.body.email);
-          await createAccount('trainer', str(req.body.name, 'Name', 120), email, validPassword(req.body.password));
+          const name = str(req.body.name, 'Name', 120);
+          await createAccount('trainer', name, email, validPassword(req.body.password));
+          await emailAdmin(`New trainer signed up: ${name}`, [`${name} (${email}) accepted their invite and created a trainer account.`, `Time: ${now().toISOString()}`]);
           return { email };
         }
         if (inv.kind === 'reset' && inv.userId) {
@@ -190,6 +218,7 @@ export function createApi({ auth, db, setupCode, now = () => new Date() }: ApiDe
           if (!u || u.disabled) throw new HttpError(404, 'Account not found');
           await auth.updateUser(inv.userId, { password: validPassword(req.body.password) });
           await auth.revokeRefreshTokens(inv.userId);
+          await emailAdmin(`Password reset completed: ${u.name}`, [`${u.name} (${u.email}) set a new password using a reset link.`]);
           return { email: u.email };
         }
         throw new HttpError(404, 'Invalid link');
@@ -214,7 +243,43 @@ export function createApi({ auth, db, setupCode, now = () => new Date() }: ApiDe
       await auth.updateUser(uid, { disabled });
       if (disabled) await auth.revokeRefreshTokens(uid);
       await userRef(uid).update({ disabled });
+      await emailTo(target.email, disabled ? 'Your RepMinder account was disabled' : 'Your RepMinder account was re-enabled', [
+        disabled ? 'The account owner has disabled your access. Contact them if this is unexpected.' : 'The account owner has re-enabled your access. You can sign in again.',
+      ]);
       return { disabled };
+    }),
+  );
+
+  // ----- change notifications -----
+  // The web app saves straight to Firestore, so after each save it tells us
+  // what changed and we email the right people. The messages are the same
+  // ones written to the activity log.
+  r.post(
+    '/notify',
+    wrap(async (req) => {
+      const me = await caller(req);
+      const workspaceId = typeof req.body.workspaceId === 'string' && req.body.workspaceId ? req.body.workspaceId : me.uid;
+      if (workspaceId !== me.uid && me.role !== 'owner') throw new HttpError(403, 'Not allowed');
+      const raw: unknown = req.body.messages;
+      const messages = (Array.isArray(raw) ? raw : [])
+        .filter((m): m is string => typeof m === 'string' && !!m.trim())
+        .slice(0, 20)
+        .map((m) => m.trim().slice(0, 500));
+      if (!messages.length) return { sent: 0 };
+
+      const owner = (await userRef(workspaceId).get()).data() as UserDoc | undefined;
+      if (!owner) throw new HttpError(404, 'Workspace not found');
+      const lines = [...messages.map((m) => `• ${m}`), `By: ${me.name} (${me.role})`, `Time: ${now().toISOString()}`];
+      const subject = messages.length === 1 ? messages[0] : `${messages.length} changes`;
+
+      if (me.uid === workspaceId && me.role === 'trainer') {
+        await emailAdmin(`[${me.name}] ${subject}`, lines);
+      } else if (me.uid !== workspaceId) {
+        // The owner changed a trainer's dashboard: tell the trainer.
+        await emailTo(owner.email, `Your dashboard was updated: ${subject}`, lines);
+      }
+      // The owner changing their own workspace needs no email.
+      return { sent: messages.length };
     }),
   );
 
@@ -244,6 +309,8 @@ export function createApi({ auth, db, setupCode, now = () => new Date() }: ApiDe
     wrap(async (req) => {
       const { link, gone } = await portalTarget(String(req.params.token));
       const ref = wsRef(link.workspaceId);
+      let portalMessage = '';
+      let clientName = '';
       const data = await db.runTransaction(async (tx) => {
         const ws = (await tx.get(ref)).data() as WorkspaceDoc | undefined;
         const d = ws && (JSON.parse(ws.data) as DB);
@@ -259,8 +326,14 @@ export function createApi({ auth, db, setupCode, now = () => new Date() }: ApiDe
         if (json.length > MAX_WORKSPACE_BYTES) throw new HttpError(507, "Your trainer's account is full. Please let them know.");
         tx.update(ref, { data: json, version: ws.version + 1, updatedAt: FieldValue.serverTimestamp(), updatedBy: `portal:${link.clientId}` });
         tx.create(db.collection('activity').doc(), activity(link.workspaceId, `portal:${link.clientId}`, `${client.firstName} ${client.lastName}`, 'client', message));
+        portalMessage = message;
+        clientName = `${client.firstName} ${client.lastName}`;
         return d;
       });
+      const trainer = (await userRef(link.workspaceId).get()).data() as UserDoc | undefined;
+      const lines = [`${clientName}: ${portalMessage}`, `Time: ${now().toISOString()}`];
+      await emailTo(trainer?.email, `${clientName} updated their portal`, lines);
+      await emailAdmin(`[${trainer?.name ?? 'Trainer'}] ${clientName} updated their portal`, lines);
       return { clientId: link.clientId, db: scopeForClient(data, link.clientId, now()) };
     }),
   );

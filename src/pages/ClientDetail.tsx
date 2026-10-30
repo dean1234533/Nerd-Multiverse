@@ -441,7 +441,7 @@ export default function ClientDetail() {
                         </td>
                       ))}
                       <td>
-                        <button className="icon-btn" aria-label="Delete measurement" onClick={() => confirm('Delete these measurements?') && update((d) => void (d.assessments = d.assessments.filter((x) => x.id !== a.id)))}>
+                        <button className="icon-btn" aria-label="Delete measurement" onClick={() => confirm('Delete these measurements?') && update((d) => void (d.assessments = d.assessments.filter((x) => x.id !== a.id)), 'Deleted a measurement entry')}>
                           ×
                         </button>
                       </td>

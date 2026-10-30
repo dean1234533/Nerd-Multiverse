@@ -20,6 +20,7 @@ import Team from './pages/Team';
 import PortalPreview, { PublicPortal } from './pages/Portal';
 import { AcceptInvite, Login, Setup } from './pages/Auth';
 import InstallBanner from './components/InstallBanner';
+import NotificationBell from './components/NotificationBell';
 
 // 24×24 stroke icons, drawn as path data.
 const ICONS = {
@@ -207,6 +208,7 @@ function Shell() {
           )}
         </nav>
         <div className="sidebar-foot">
+          <NotificationBell workspaceId={ws.home} />
           <div className={`sync ${sync}`}>{sync === 'saved' ? 'All changes saved' : sync === 'saving' ? 'Saving…' : 'Offline – will retry'}</div>
           <div className="me">
             <span className="grow">

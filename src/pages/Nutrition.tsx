@@ -69,6 +69,7 @@ export default function Nutrition() {
         targetCalories: 2000,
         meals: ['Breakfast', 'Lunch', 'Dinner', 'Snacks'].map((name) => ({ id: uid(), name, items: [] })),
       }),
+      'Created a new meal plan',
     );
     nav(`/nutrition/${id}`);
   };

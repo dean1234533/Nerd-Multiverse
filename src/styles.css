@@ -1326,3 +1326,11 @@ code {
 .link-btn:hover {
   text-decoration: underline;
 }
+
+/* Notification bell */
+.notif { position: relative; margin-bottom: 8px; }
+.notif-btn { position: relative; }
+.notif-badge { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #d33; color: #fff; font-size: 11px; line-height: 18px; text-align: center; }
+.notif-panel { position: absolute; left: 0; bottom: 100%; width: 300px; max-width: 80vw; max-height: 360px; overflow: auto; z-index: 50; padding: 12px; }
+.notif-panel .list li { padding: 6px 8px; }
+.notif-unread { background: color-mix(in srgb, var(--brand) 12%, transparent); border-radius: 6px; }

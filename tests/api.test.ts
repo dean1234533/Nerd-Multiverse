@@ -1,5 +1,6 @@
 // Serverless API tests against the Auth + Firestore emulators. Run with `npm run test:firebase`.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Mail } from '../server/notify';
 import type { AddressInfo } from 'node:net';
 import { createServer, type Server } from 'node:http';
 import { Timestamp } from 'firebase-admin/firestore';
@@ -17,11 +18,19 @@ const SETUP_CODE = 'correct-horse-battery';
 const { auth, db } = admin();
 let server: Server;
 let base = '';
+const sent: Mail[] = [];
+const ADMIN = 'admin@example.com';
 
 beforeAll(async () => {
   await fetch(`http://${AUTH_HOST}/emulator/v1/projects/${PROJECT}/accounts`, { method: 'DELETE' });
   await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080'}/emulator/v1/projects/${PROJECT}/databases/(default)/documents`, { method: 'DELETE' });
-  server = createServer(createApi({ auth, db, setupCode: SETUP_CODE })).listen(0);
+  server = createServer(createApi({
+    auth,
+    db,
+    setupCode: SETUP_CODE,
+    adminEmail: ADMIN,
+    mailer: async (m) => void sent.push(m),
+  })).listen(0);
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
 });
 afterAll(() => server.close());
@@ -97,6 +106,12 @@ describe('invite links', () => {
     expect((await db.doc(`users/${joUid}`).get()).data()).toMatchObject({ role: 'trainer', name: 'Jo Smith' });
     expect(JSON.parse((await db.doc(`workspaces/${joUid}`).get()).data()!.data).exercises.length).toBeGreaterThan(0);
     expect((await call('POST', `/invites/${token}/accept`, { name: 'Eve', email: 'eve@example.com', password: 'eve-password' })).status).toBe(404);
+  });
+
+  it('emails the admin when a trainer signs up', () => {
+    const mail = sent.find((m) => m.subject.includes('New trainer signed up'));
+    expect(mail).toMatchObject({ to: ADMIN });
+    expect(mail!.lines.join(' ')).toContain('jo@example.com');
   });
 
   it('a failed sign-up leaves the link usable', async () => {
@@ -176,5 +191,40 @@ describe('client portal', () => {
     await db.doc(`portalLinks/${token}`).update({ revoked: true });
     expect((await call('GET', `/portal/${token}`)).status).toBe(404);
     expect((await call('GET', '/portal/nope')).status).toBe(404);
+  });
+});
+
+describe('change notifications', () => {
+  it('a trainer saving changes emails the admin, not themselves', async () => {
+    const joToken = await signIn('jo@example.com', 'new-jo-password');
+    sent.length = 0;
+    const r = await call('POST', '/notify', { messages: ['Added client Pat Lee', 'Settings saved'] }, joToken);
+    expect(r.body).toMatchObject({ sent: 2 });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ to: ADMIN });
+    expect(sent[0].subject).toContain('Jo Smith');
+    expect(sent[0].lines.join('\n')).toContain('Added client Pat Lee');
+  });
+
+  it('the owner editing a trainer workspace emails that trainer', async () => {
+    sent.length = 0;
+    const r = await call('POST', '/notify', { workspaceId: joUid, messages: ['Created a new program'] }, ownerToken);
+    expect(r.status).toBe(200);
+    expect(sent).toEqual([expect.objectContaining({ to: 'jo@example.com' })]);
+  });
+
+  it('the owner editing their own workspace sends nothing', async () => {
+    sent.length = 0;
+    await call('POST', '/notify', { messages: ['Settings saved'] }, ownerToken);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('a trainer cannot notify about someone else’s workspace, and anonymous calls are refused', async () => {
+    const joToken = await signIn('jo@example.com', 'new-jo-password');
+    const { uid: ownerUid } = await auth.verifyIdToken(ownerToken);
+    sent.length = 0;
+    expect((await call('POST', '/notify', { workspaceId: ownerUid, messages: ['x'] }, joToken)).status).toBe(403);
+    expect((await call('POST', '/notify', { messages: ['x'] })).status).toBe(401);
+    expect(sent).toHaveLength(0);
   });
 });

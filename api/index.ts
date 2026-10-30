@@ -2,6 +2,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { admin } from '../server/firebaseAdmin.js';
 import { createApi } from '../server/api.js';
+import { resendMailer } from '../server/notify.js';
 
 let app: ReturnType<typeof createApi> | undefined;
 
@@ -9,7 +10,7 @@ export default function handler(req: IncomingMessage, res: ServerResponse) {
   if (!app) {
     try {
       const { auth, db } = admin();
-      app = createApi({ auth, db, setupCode: process.env.SETUP_CODE });
+      app = createApi({ auth, db, setupCode: process.env.SETUP_CODE, mailer: resendMailer(), adminEmail: process.env.ADMIN_EMAIL, appUrl: process.env.APP_URL });
     } catch (e) {
       res.statusCode = 503;
       res.setHeader('content-type', 'application/json');

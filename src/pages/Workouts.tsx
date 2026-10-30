@@ -68,7 +68,7 @@ export default function Workouts() {
 
   const newProgram = () => {
     const id = uid();
-    update((d) => void d.programs.push({ id, name: 'New program', description: '', days: [{ id: uid(), name: 'Day 1', items: [] }] }));
+    update((d) => void d.programs.push({ id, name: 'New program', description: '', days: [{ id: uid(), name: 'Day 1', items: [] }] }), 'Created a new program');
     nav(`/workouts/${id}`);
   };
 
